@@ -1,0 +1,378 @@
+---
+title: "Practical Machine Learning - Course Project"
+author: "Peter Becker"
+date: "19 December 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+In this assignment we will attmept to model the quality of how an exercise is performed. 
+The exercise is a a bicep curl, performed with a number of sensors attached to the body and the dumbell.
+
+The training set comprises of a number of repetitions of the exercise performed by 6 individuals. 
+
+The exercises are classified into the following categories;
+
+* Class A - exactly according to the specification.
+* Class B - throwing the elbows to the front.
+* Class C - lifting the dumbbell only halfway.
+* Class D - lowering the dumbbell only halfway.
+* Class E - throwing the hips to the front.
+
+This is the variable we will predict.
+
+## Data pre processing
+Libraries to use
+```{r results=FALSE, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(randomForest)
+library(rpart)
+```
+
+A training and test set is provided. First import the data.
+
+```{r}
+train <- read.csv("pml-training.csv")
+test <- read.csv("pml-testing.csv")
+```
+
+We see that there are only 20 records in the test set (vs 19622 in the training set). 
+This is not a very good ratio. We will exclude this test set for now and create our own test set from the training data.
+
+```{r}
+set.seed(1234)
+inTrain <- createDataPartition(y = train$classe, p=0.7, list=FALSE)
+newTrain <- train[inTrain,]
+newTest <- train[-inTrain,]
+```
+
+Get a feel for the data
+
+```{r results=FALSE, warning=FALSE, message=FALSE, eval=FALSE}
+#Results truncated for the report
+str(newTrain)
+subset(newTrain, num_window == 12)
+```
+There are a lot of variables! We will start by excluding variables that contain '#DIV/0!' as these are clearly erroneous. We will also exclude variables that contain predominantly NA values. 
+
+For a number of the variables there appears to only be one entry per 'exercise repetition'. An exercise repetition is comprised of a number of records of data. With more time and a more complex model, we would keep these variables and analyse accordingly, but for this initial analysis they will be excluded.
+
+Variables to exclude can be seen in the appendix.
+```{r results=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+variablesToExclude <- c(
+'kurtosis_roll_belt',
+'kurtosis_picth_belt',
+'kurtosis_yaw_belt',
+'skewness_roll_belt',
+'skewness_roll_belt.1',
+'skewness_yaw_belt',
+'max_roll_belt',
+'max_picth_belt',
+'max_yaw_belt',
+'min_roll_belt',
+'min_pitch_belt',
+'min_yaw_belt',
+'amplitude_roll_belt',
+'amplitude_pitch_belt',
+'amplitude_yaw_belt',
+'var_total_accel_belt',
+'avg_roll_belt',
+'stddev_roll_belt',
+'var_roll_belt',
+'avg_pitch_belt',
+'stddev_pitch_belt',
+'var_pitch_belt',
+'avg_yaw_belt',
+'stddev_yaw_belt',
+'var_yaw_belt',
+'var_accel_arm',
+'avg_roll_arm',
+'stddev_roll_arm',
+'var_roll_arm',
+'avg_pitch_arm',
+'stddev_pitch_arm',
+'var_pitch_arm',
+'avg_yaw_arm',
+'stddev_yaw_arm',
+'var_yaw_arm',
+'kurtosis_roll_arm',
+'kurtosis_picth_arm',
+'kurtosis_yaw_arm',
+'skewness_roll_arm',
+'skewness_pitch_arm',
+'skewness_yaw_arm',
+'max_roll_arm',
+'max_picth_arm',
+'max_yaw_arm',
+'min_roll_arm',
+'min_pitch_arm',
+'min_yaw_arm',
+'amplitude_roll_arm',
+'amplitude_pitch_arm',
+'amplitude_yaw_arm',
+'kurtosis_roll_dumbbell',
+'kurtosis_picth_dumbbell',
+'kurtosis_yaw_dumbbell',
+'skewness_roll_dumbbell',
+'skewness_pitch_dumbbell',
+'skewness_yaw_dumbbell',
+'max_roll_dumbbell',
+'max_picth_dumbbell',
+'max_yaw_dumbbell',
+'min_roll_dumbbell',
+'min_pitch_dumbbell',
+'min_yaw_dumbbell',
+'amplitude_roll_dumbbell',
+'amplitude_pitch_dumbbell',
+'amplitude_yaw_dumbbell',
+'var_accel_dumbbell',
+'avg_roll_dumbbell',
+'stddev_roll_dumbbell',
+'var_roll_dumbbell',
+'avg_pitch_dumbbell',
+'stddev_pitch_dumbbell',
+'var_pitch_dumbbell',
+'avg_yaw_dumbbell',
+'stddev_yaw_dumbbell',
+'var_yaw_dumbbell',
+'kurtosis_roll_forearm',
+'kurtosis_picth_forearm',
+'kurtosis_yaw_forearm',
+'skewness_roll_forearm',
+'skewness_pitch_forearm',
+'skewness_yaw_forearm',
+'max_roll_forearm',
+'max_picth_forearm',
+'max_yaw_forearm',
+'min_roll_forearm',
+'min_pitch_forearm',
+'min_yaw_forearm',
+'amplitude_roll_forearm',
+'amplitude_pitch_forearm',
+'amplitude_yaw_forearm',
+'var_accel_forearm',
+'avg_roll_forearm',
+'stddev_roll_forearm',
+'var_roll_forearm',
+'avg_pitch_forearm',
+'stddev_pitch_forearm',
+'var_pitch_forearm',
+'avg_yaw_forearm',
+'stddev_yaw_forearm',
+'var_yaw_forearm'
+
+)
+```
+
+```{r}
+newTrain <- newTrain[,!names(newTrain) %in% variablesToExclude]
+
+```
+
+We will also drop a few more variables. The id should not be used for prediction and neither should the individuals name. The name of the person does appear to be included in the final test set, but for a more generalised model we will exclude it (possibly at the cost of accuracy)
+
+Another point ot note is that the final test set is 20 individual records extracted from the data set. These are effectively 'random' time points within the exercise repetition. We are therefore not modelling full repetitions from start to finish, but modelling sensor readings at time points throughout the repetition. This does not fee totally intuitive, as analysing a full repetition and determining its quality would be more accurate and beneficial than testing on ad hoc positions during the repetition.  
+
+We will therefore also exclude the timestamp variables, as using them to extract a feature such as elapsed time per repetition will not assist with this problem.
+
+
+```{r}
+additionalVarsToExclude <- c('X','user_name',
+'raw_timestamp_part_1',
+'raw_timestamp_part_2',
+'cvtd_timestamp',
+'new_window',
+'num_window'
+)
+
+newTrain <- newTrain[,!names(newTrain) %in% additionalVarsToExclude]
+```
+
+Along with the individuals name, it appears that the specific repetition id is also still included in the final test set (num_window). Using this as a predictor would trivialise the exercise, as it alone could predict the classe outcome with 100% accuracy but without being useful in any way. We have therefore also excluded it.
+
+
+Repeat the steps in the newTest and final test sets.
+
+```{r}
+newTest <- newTest[,!names(newTest) %in% additionalVarsToExclude]
+newTest <- newTest[,!names(newTest) %in% variablesToExclude]
+test <- test[,!names(test) %in% additionalVarsToExclude]
+test <- test[,!names(test) %in% variablesToExclude]
+test <- test[,!names(test) == 'problem_id']
+```
+
+##Modelling
+
+We will use a random forest model. Reason for choosing a random forest is that it is quick to optimise usually with good defaults, is not prone to overfitting, has excellent predictive power and we are not too concerned with interpretability in this instance.
+
+Given that the detail of what all the metrics mean is beyond the scope of this exercise, we will not begin with too much exploratory analysis, and rather dive straight into the model.
+
+We will start off by using all remaining variables.
+
+```{r}
+set.seed(555)
+rf<-randomForest(classe~.,data=newTrain)
+rf
+
+```
+The Out of bag error is very low, 0.49%. We are at no risk of overfitting.
+
+Predict on the test set.
+```{r}
+predNewTest <- predict(rf, newdata = newTest)
+table(predNewTest, newTest$classe)
+(1674 + 1131 + 1019 + 959 + 1081) / nrow(newTest)
+```
+99.6% test set Accuracy - the model is performing very well for a first attempt!
+
+Let us check variable importance. 
+
+```{r}
+varImpPlot(rf,type=2)
+```
+We may be able to build a far simpler model that still maintains a sufficient level of accuracy.
+We will pick the 8 most important variables for a new, simpler random forest model.
+
+```{r}
+set.seed(222)
+rf2<-randomForest(classe~roll_belt + yaw_belt + pitch_forearm + magnet_dumbbell_z + pitch_belt + magnet_dumbbell_y + roll_forearm + magnet_dumbbell_x ,data=newTrain)
+rf2
+predNewTestSimple <- predict(rf2, newdata = newTest)
+table(predNewTestSimple, newTest$classe)
+(1665 + 1109 + 1014 + 960 + 1067) / nrow(newTest)
+```
+With only 8 variables we are still achieving an accuracy of 98.8%. 
+We will proceed with this simpler model in the interest of reduced computational requirements and scalability.
+The out of bag error (and expected out of sample error) is 1.44%.
+
+
+We will quickly build a simple decision tree to confirm our findings.
+```{r}
+set.seed(1)
+tree = rpart(classe~ ., data = newTrain, method="class",
+control = rpart.control(maxdepth = 5)
+)
+tree
+```
+The decision tree confirms our findings regarding variable importance. Picking 5 variables for the tree results in 5 variables that also ewre determined to be important earlier.
+
+
+##Conclusion
+
+We have developed a simple and accurate model using 8 variables to predict exercise form.
+
+##Appendix
+
+
+```{r}
+variablesToExclude <- c(
+'kurtosis_roll_belt',
+'kurtosis_picth_belt',
+'kurtosis_yaw_belt',
+'skewness_roll_belt',
+'skewness_roll_belt.1',
+'skewness_yaw_belt',
+'max_roll_belt',
+'max_picth_belt',
+'max_yaw_belt',
+'min_roll_belt',
+'min_pitch_belt',
+'min_yaw_belt',
+'amplitude_roll_belt',
+'amplitude_pitch_belt',
+'amplitude_yaw_belt',
+'var_total_accel_belt',
+'avg_roll_belt',
+'stddev_roll_belt',
+'var_roll_belt',
+'avg_pitch_belt',
+'stddev_pitch_belt',
+'var_pitch_belt',
+'avg_yaw_belt',
+'stddev_yaw_belt',
+'var_yaw_belt',
+'var_accel_arm',
+'avg_roll_arm',
+'stddev_roll_arm',
+'var_roll_arm',
+'avg_pitch_arm',
+'stddev_pitch_arm',
+'var_pitch_arm',
+'avg_yaw_arm',
+'stddev_yaw_arm',
+'var_yaw_arm',
+'kurtosis_roll_arm',
+'kurtosis_picth_arm',
+'kurtosis_yaw_arm',
+'skewness_roll_arm',
+'skewness_pitch_arm',
+'skewness_yaw_arm',
+'max_roll_arm',
+'max_picth_arm',
+'max_yaw_arm',
+'min_roll_arm',
+'min_pitch_arm',
+'min_yaw_arm',
+'amplitude_roll_arm',
+'amplitude_pitch_arm',
+'amplitude_yaw_arm',
+'kurtosis_roll_dumbbell',
+'kurtosis_picth_dumbbell',
+'kurtosis_yaw_dumbbell',
+'skewness_roll_dumbbell',
+'skewness_pitch_dumbbell',
+'skewness_yaw_dumbbell',
+'max_roll_dumbbell',
+'max_picth_dumbbell',
+'max_yaw_dumbbell',
+'min_roll_dumbbell',
+'min_pitch_dumbbell',
+'min_yaw_dumbbell',
+'amplitude_roll_dumbbell',
+'amplitude_pitch_dumbbell',
+'amplitude_yaw_dumbbell',
+'var_accel_dumbbell',
+'avg_roll_dumbbell',
+'stddev_roll_dumbbell',
+'var_roll_dumbbell',
+'avg_pitch_dumbbell',
+'stddev_pitch_dumbbell',
+'var_pitch_dumbbell',
+'avg_yaw_dumbbell',
+'stddev_yaw_dumbbell',
+'var_yaw_dumbbell',
+'kurtosis_roll_forearm',
+'kurtosis_picth_forearm',
+'kurtosis_yaw_forearm',
+'skewness_roll_forearm',
+'skewness_pitch_forearm',
+'skewness_yaw_forearm',
+'max_roll_forearm',
+'max_picth_forearm',
+'max_yaw_forearm',
+'min_roll_forearm',
+'min_pitch_forearm',
+'min_yaw_forearm',
+'amplitude_roll_forearm',
+'amplitude_pitch_forearm',
+'amplitude_yaw_forearm',
+'var_accel_forearm',
+'avg_roll_forearm',
+'stddev_roll_forearm',
+'var_roll_forearm',
+'avg_pitch_forearm',
+'stddev_pitch_forearm',
+'var_pitch_forearm',
+'avg_yaw_forearm',
+'stddev_yaw_forearm',
+'var_yaw_forearm'
+
+)
+```
